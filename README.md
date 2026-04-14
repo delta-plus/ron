@@ -39,7 +39,7 @@ exit - Exit shell mode or the server interface. The server can also be shut down
 kill - Kill active agent(s).  
 clear - Clears the output window. It even works in shell mode.  
   
-<b>Usage:</b>  
+<b>Examples:</b>  
 Use `new [host IP]` to generate a new agent. Since the id is left unspecified, a random five-letter ID will be chosen and shown in the output window.  
 An Alpine docker container is used to generate the agent binaries. In this example, an Ubuntu HackTheBox machine is used as the target.  
 Run `use [ID]` to interact with the agent once a callback is received. Run `info` to show basic host info from the target.  
