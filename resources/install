@@ -1,0 +1,56 @@
+#!/bin/bash
+
+host="$1"
+
+install_packages() {
+  sudo apt-get install -y python3 openssl musl-tools docker
+
+  python3 -m venv venv
+  source venv/bin/activate
+  pip install -r requirements.txt
+}
+
+generate_certs() {
+  sed -i "s|HOST|$host|g" san.cnf
+  openssl req -x509 -nodes -days 36500 -newkey rsa:4096 -keyout key.pem -out cert.pem -config san.cnf
+}
+
+if [[ -z "$host" ]]; then
+  echo 'Please specify a domain name or IP address to use with RON.'
+  exit
+fi
+
+cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" || exit
+
+echo 'Installing required packages...'
+install_packages 2>&1 | grep -q *
+
+if ! (dpkg -s python3 && dpkg -s openssl && dpkg -s musl-tools); then
+  echo '[-] Package installation via apt failed. Exiting.'
+  exit
+fi
+
+echo '[+] Done.'
+echo
+
+echo 'Generating TLS certificates...'
+cd certs
+generate_certs 2>&1 | grep -q *
+
+if ! [[ -f key.pem ]] && [[ -f cert.pem ]]; then
+  echo '[-] Certificate generation failed. Exiting.'
+  exit
+fi
+
+echo '[+] Done.'
+echo
+
+echo 'Building Docker image for agent compilation...'
+cd ../builder
+docker build --network=host -t ron-builder . 2>&1 > /dev/null
+sd '# COPY' 'COPY' Dockerfile
+if ; then
+  echo '[+] Installation successful!'
+else
+  echo '[-] Installation failed.'
+fi
