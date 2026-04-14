@@ -16,7 +16,7 @@ A lightweight C2 framework written in Nim (agent) and Python (server).
   
 *Currently untested on Windows. To do.  
   
-<b>Coming Soon:</b>
+<b>Coming Soon:</b>  
 • Two-way resumable file transfer.  
 • Encryption with mutual authentication via libsodium.  
 • Automatic obfuscation.  
@@ -30,8 +30,7 @@ A lightweight C2 framework written in Nim (agent) and Python (server).
 &nbsp;&nbsp;&nbsp;The output directory can be set by editing resources/builder/build.
   
 <b>Usage:</b>  
-new [platform] [IP] ([port]) ([ID]) - Generate a new agent binary.  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Ports and IDs must be unique and are random if unspecified. Platform should be "lin" or "win".  
+new [platform] [IP] ([port]) ([ID]) - Generate a new agent binary. Ports and IDs are random if unspecified. Platform should be "lin" or "win".  
 use [agent ID] - Activate agent. This agent will now accept commands.  
 free [agent ID] - Deactivate agent. The agent remains alive, but commands are not sent to it.  
 info - Return info about the target host.  
@@ -45,7 +44,7 @@ Use `new [host IP]` to generate a new agent. Since the id is left unspecified, a
 An Alpine docker container is used to generate the agent binaries. In this example, an Ubuntu HackTheBox machine is used as the target.  
 Run `use [ID]` to interact with the agent once a callback is received. Run `info` to show basic host info from the target.  
 ![Pic 1](examples/ron.png)
-
+  
 RON is divided into two windows: one for entering commands, one for displaying results.  
 Type `clear` to clear the output and run `shell` to enter shell mode.  
 Note that RON can delete itself and while still running in memory.  
