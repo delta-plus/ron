@@ -6,6 +6,7 @@ A lightweight C2 framework written in Nim (agent) and Python (server).
 <b>Highlights:</b>  
 • Urwid terminal-based UI. Pretty!  
 • WSS comms for stealth, speed, and security.  
+• Encryption with mutual authentication via libsodium.  
 • Agents are compatible with Linux and Windows*.  
 • Command history (use arrow keys!)
 • Scrollable output (use pgup/pgdn!)
@@ -18,7 +19,6 @@ A lightweight C2 framework written in Nim (agent) and Python (server).
   
 <b>Coming Soon:</b>  
 • Two-way resumable file transfer.  
-• Encryption with mutual authentication via libsodium.  
 • Automatic obfuscation.  
 • In-memory C execution via LuaJIT FFI? Maybe...  
   

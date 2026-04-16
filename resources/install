@@ -3,7 +3,7 @@
 host="$1"
 
 install_packages() {
-  sudo apt-get install -y python3 openssl musl-tools docker
+  sudo apt-get install -y python3 openssl musl-tools docker sd 
 
   python3 -m venv venv
   source venv/bin/activate
