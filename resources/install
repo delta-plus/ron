@@ -3,7 +3,7 @@
 host="$1"
 
 install_packages() {
-  sudo apt-get install -y python3 openssl musl-tools docker sd 
+  sudo apt-get install -y python3 openssl musl-tools docker
 
   python3 -m venv venv
   source venv/bin/activate
@@ -48,7 +48,7 @@ echo
 echo 'Building Docker image for agent compilation...'
 cd ../builder
 docker build --network=host -t ron-builder . 2>&1 > /dev/null
-sd '# COPY' 'COPY' Dockerfile
+sed -i 's|# COPY|COPY|' Dockerfile
 if ; then
   echo '[+] Installation successful!'
 else
