@@ -20,7 +20,6 @@ A lightweight C2 framework written in Nim (agent) and Python (server).
 <b>Coming Soon:</b>  
 • Two-way resumable file transfer.  
 • Automatic obfuscation.  
-• In-memory C execution via LuaJIT FFI? Maybe...  
   
 <b>Installation:</b>  
 1. `git clone https://github.com/delta-plus/ron`  

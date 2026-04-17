@@ -279,52 +279,6 @@ def process_input(key: str):
         add_output('[SHELL]', True)
         term.prompt_text.edit_text = ''
 
-#      elif term.prompt_text.edit_text.split(' ')[0] == 'upload':
-#        path = os.path.abspath(os.path.join('modules', term.prompt_text.edit_text.split(' ')[1]))
-#        if os.path.isfile(path) and path.startswith(os.path.abspath('modules')):
-#          with open(path) as f:
-#            payload = f.read()
-#        else:
-#          payload = term.prompt_text.edit_text.split(' ', 1)[1]
-#        add_task('luau', payload)
-#        add_output('>> ' + term.prompt_text.edit_text)
-#        if len(term.prompt_history) == 0 or term.prompt_text.edit_text != term.prompt_history[-1]:
-#          term.prompt_history.append(term.prompt_text.edit_text)
-#        term.prompt_text.edit_text = ''
-
-#      elif term.prompt_text.edit_text.split(' ')[0] == 'download':
-#        if term.prompt_text.edit_text.split(' ')[1] == '-c':
-#          path = os.path.abspath(os.path.join('modules', term.prompt_text.edit_text.split(' ')[2]))
-#          if os.path.isfile(path) and path.startswith(os.path.abspath('modules')):
-#            if term.prompt_text.edit_text.split(' ')[2].endswith('.c'):
-#              with open(path) as f:
-#                body = f.read()
-#              body = c_to_luajit(body)
-#              add_output('>> ' + term.prompt_text.edit_text)
-#              add_output(body)
-#        else:
-#          path = os.path.abspath(os.path.join('modules', term.prompt_text.edit_text.split(' ')[1]))
-#          if os.path.isfile(path) and path.startswith(os.path.abspath('modules')):
-#            with open(path) as f:
-#              body = f.read()
-#            if term.prompt_text.edit_text.split(' ')[1].endswith('.c'):
-#              body = c_to_luajit(body)
-#          else:
-#            body = term.prompt_text.edit_text.split(' ', 1)[1]
-#          if not body.startswith('ffi.cdef'):
-#            with open('modules/cdef') as f:
-#              cdef = f.read()
-#              lines = cdef.count('\n')
-#            if lines > 1:
-#              cdef = re.sub('\n', '; ', cdef)
-#              cdef = re.sub(';;', ';', cdef)
-#          payload = {"cdef": cdef, "body": body}
-#          add_task('lffi', json.dumps(payload))
-#          add_output('>> ' + term.prompt_text.edit_text)
-#        if len(term.prompt_history) == 0 or term.prompt_text.edit_text != term.prompt_history[-1]:
-#          term.prompt_history.append(term.prompt_text.edit_text)
-#        term.prompt_text.edit_text = ''
-
       elif [task for task in task_list if task['name'] == term.prompt_text.edit_text.split(' ')[0]]:
         if ' ' in term.prompt_text.edit_text:
           add_task(term.prompt_text.edit_text.split(' ')[0], term.prompt_text.edit_text.split(' ', 1)[1])
