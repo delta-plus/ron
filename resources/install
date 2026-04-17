@@ -23,7 +23,7 @@ fi
 cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" || exit
 
 echo 'Installing required packages...'
-install_packages 2>&1 | grep -q *
+install_packages 2>&1 | grep -q ''
 
 if ! (dpkg -s python3 && dpkg -s openssl && dpkg -s musl-tools); then
   echo '[-] Package installation via apt failed. Exiting.'
@@ -35,7 +35,7 @@ echo
 
 echo 'Generating TLS certificates...'
 cd certs
-generate_certs 2>&1 | grep -q *
+generate_certs 2>&1 | grep -q ''
 
 if ! [[ -f key.pem ]] && [[ -f cert.pem ]]; then
   echo '[-] Certificate generation failed. Exiting.'
@@ -48,9 +48,4 @@ echo
 echo 'Building Docker image for agent compilation...'
 cd ../builder
 docker build --network=host -t ron-builder . 2>&1 > /dev/null
-sed -i 's|# COPY|COPY|' Dockerfile
-if ; then
-  echo '[+] Installation successful!'
-else
-  echo '[-] Installation failed.'
-fi
+echo '[+] Installation complete'
