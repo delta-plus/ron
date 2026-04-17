@@ -2,9 +2,11 @@
 
 platform="$1"
 agent="$2"
-outdir="$HOME/offsec/dav"
+outdir=""
 
 cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" || exit
+mkdir -p src
+mkdir -p bin
 set -e
 
 cp "../agents/$agent.nim" src
