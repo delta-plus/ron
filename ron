@@ -18,10 +18,9 @@ import asyncio
 from collections import deque
 from nacl.public import PublicKey, PrivateKey, Box 
 
-agents = []
+agents = {}
 unconnected = {}
 keys = []
-new_task = {}
 websocket_servers = {}
 shell = 0
 active_count = 0
@@ -198,13 +197,18 @@ def scroll_lines(listbox, n):
   walker.set_focus(new_pos)
 
 def add_task(task_name, task_data):
-  global new_task
+  global agents
   new_task = [task for task in task_list if task['name'] == task_name][0]
   new_task["data"] = task_data
+  for x in agents:
+    agent = agents[x]
+    if agent["active"]:
+      agent["task"] = new_task
 
 def add_agent(id, port, pubkey):
-  agent = {"id": id, "port": port, "active": False, "pubkey": pubkey}
-  return agent
+  global agents
+  agent = {"id": id, "active": False, "pubkey": pubkey, "task": None}
+  agents[port] = agent
 
 class Terminal(urwid.WidgetWrap):
   def __init__(self):
@@ -308,7 +312,7 @@ def process_input(key: str):
           if len(term.prompt_text.edit_text.split(' ')) > 3:
             if term.prompt_text.edit_text.split(' ')[3]:
               port = term.prompt_text.edit_text.split(' ')[3]
-              if next((c for c in agents if c["port"] == port), None) is None:
+              if port not in agents:
                 s = socket.socket()
                 try:
                   s.bind(("127.0.0.1", int(port)))
@@ -320,14 +324,14 @@ def process_input(key: str):
                 if len(term.prompt_text.edit_text.split(' ')) > 4:
                   if term.prompt_text.edit_text.split(' ')[4]:
                     id = term.prompt_text.edit_text.split(' ')[4]
-                    if next((c for c in agents if c["id"] == id), None) is not None:
+                    if any(agent["id"] == id for agent in agents.values()):
                       add_output('ID already in use.')
                       term.prompt_text.edit_text = ''
                       term.up_count = 0
                       return
                 else:
                   id = ''.join(random.choices(string.ascii_lowercase, k=5))
-                  while next((c for c in agents if c["id"] == id), None) is not None:
+                  while any(agent["id"] == id for agent in agents.values()):
                     id = ''.join(random.choices(string.ascii_lowercase, k=5))
             else:
               add_output('Port already in use.\n')
@@ -336,7 +340,7 @@ def process_input(key: str):
               return
           else:
             id = ''.join(random.choices(string.ascii_lowercase, k=5))
-            while next((c for c in agents if c["id"] == id), None) is not None:
+            while any(agent["id"] == id for agent in agents.values()):
               id = ''.join(random.choices(string.ascii_lowercase, k=5))
             port = get_port()
         else:
@@ -358,7 +362,7 @@ def process_input(key: str):
 
       elif term.prompt_text.edit_text.startswith('use'):
         id = term.prompt_text.edit_text.split(' ')[1]
-        agent = next((c for c in agents if c["id"] == id), None)
+        agent = next((x for x in agents.values() if x["id"] == id), None)
         agent["active"] = True
         active_count += 1
         add_output('>> ' + term.prompt_text.edit_text)
@@ -366,7 +370,7 @@ def process_input(key: str):
 
       elif term.prompt_text.edit_text.startswith('free'):
         id = term.prompt_text.edit_text.split(' ')[1]
-        agent = next((c for c in agents if c["id"] == id), None)
+        agent = next((x for x in agents.values() if x["id"] == id), None)
         agent["active"] = False
         active_count -= 1
         add_output('>> ' + term.prompt_text.edit_text)
@@ -397,7 +401,6 @@ async def ws(websocket, path):
     receive = True
     while True:
       global agents
-      global new_task
       global shell
       global active_count
 
@@ -406,13 +409,12 @@ async def ws(websocket, path):
           callback = await websocket.recv()
           if static_keys:
             for id in unconnected:
-              message = decrypt(callback, unconnected[id])
-              if message == id:
-                pubkey = unconnected[id]
+              pubkey = unconnected.get(id)
+              message = decrypt(callback, pubkey)
+              if message == id: 
                 unconnected.pop(id, None)
                 add_output('Callback: ' + id + '\n', True)
-                agent = add_agent(id, websocket.local_address[1], pubkey)
-                agents.append(agent)
+                add_agent(id, websocket.local_address[1], pubkey)
                 receive = False
           elif dynamic_keys:
             for id in unconnected:
@@ -421,32 +423,37 @@ async def ws(websocket, path):
                 pubkey = callback[len(hex_id):]
                 unconnected.pop(id, None)
                 add_output('Callback: ' + id + '\n', True)
-                agent = add_agent(id, websocket.local_address[1], pubkey)
-                agents.append(agent)
+                add_agent(id, websocket.local_address[1], pubkey)
                 receive = False
         except:
           pass
       else:
-        for agent in agents:
-          if agent["port"] == websocket.local_address[1] and agent["active"] and new_task:
-            task = json.dumps(new_task)
-            await websocket.send(encrypt(task, agent["pubkey"]))
-            response = await websocket.recv()
-            response = decrypt(response, agent["pubkey"])
-            if active_count > 1:
-              add_output('[' + agent["id"] + ']', True)
-            add_output(response)
-            if shell == 0:
-              add_output('')
-  
-            if response == 'Done':
-              agent["active"] = False
-              active_count -= 1
-              agents.remove(agent)
-              interactive = False
-              receive = True
+        port = websocket.local_address[1]
+        agent = agents.get(port)
+        if agent["task"]:
+          task = json.dumps(agent["task"])
+          agent["task"] = None
+          await websocket.send(encrypt(task, agent["pubkey"]))
+          response = await websocket.recv()
+          response = decrypt(response, agent["pubkey"])
+          if active_count > 1:
+            add_output('[' + agent["id"] + ']', True)
+          add_output(response)
+          if shell == 0:
+            add_output('')
 
-            new_task = None
+          if response == 'Done':
+            agent["active"] = False
+            agent["task"] = None
+            if static_keys:
+              unconnected[id] = agent["pubkey"]
+            else:
+              unconnected[id] = 'dynamic'
+            active_count -= 1
+            agents.pop(port, None)
+            interactive = False
+            receive = True
+ 
   except websockets.ConnectionClosed:
     add_output(f"Connection to {path} closed unexpectedly\n")
 
