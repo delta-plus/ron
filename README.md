@@ -8,9 +8,9 @@ A lightweight C2 framework written in Nim (agent) and Python (server).
 • WSS comms for stealth, speed, and security.  
 • Authenticated encryption via libsodium with static or dynamic agent keys.  
 • Agents are compatible with Linux and Windows*.  
-• Command history (use arrow keys!)
-• Scrollable output (use pgup/pgdn!)
-• Shell mode with per-agent memory of the current working directory.
+• Command history (use arrow keys!)  
+• Scrollable output (use pgup/pgdn!)  
+• Shell mode with per-agent memory of the current working directory.  
 • Asynchronous and multithreaded for responsive, full-duplex interaction. Feels good!  
 • Commands can be sent to multiple agents at once. Returned output is tagged with the ID of the agent it came from.  
 • Static, stripped binaries for portability and minimal file size.  
