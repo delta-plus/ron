@@ -2,7 +2,7 @@
 
 platform="$1"
 agent="$2"
-outdir=""
+outdir="$HOME/dav"
 
 cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" || exit
 mkdir -p src
@@ -10,21 +10,25 @@ mkdir -p bin
 set -e
 
 cp "../agents/$agent.nim" src
-docker build -t ron-builder .
 
 if [[ "$platform" == 'lin' ]]; then
-  cmd="cd /root && cp /src/$agent.nim . && nim c -d:release --mm:orc --passL:\"-static -lsodium\" $agent.nim && mv $agent /out && chmod +w /out/$agent && chown user /out/$agent"
+  docker build -t ron-builder .
+  cmd="cd /root && cp /src/$agent.nim . && nim c -d:release --mm:orc --passL:\"-static -lsodium\" --dynlibOverride:\"sodium\" $agent.nim && mv $agent /out && chmod +w /out/$agent && chown user /out/$agent"
   docker run --rm -v "$PWD/src":/src -v "$PWD/bin":/out ron-builder sh -c "$cmd"
   strip --strip-all "bin/$agent"
+
   if [[ -n "$outdir" ]]; then
     mv "bin/$agent" "$outdir"
   fi
 elif [[ "$platform" == 'win' ]]; then
-  cmd="cd /root && cp /src/$agent.nim . && nim c -d:release --cpu:amd64 --os:windows --gcc.exe:x86_64-w64-mingw32-gcc --gcc.linkerexe:x86_64-w64-mingw32-gcc --passL:\"-static -static-libgcc -static-libstdc++\" $agent.nim && mv $agent /out && chmod +w /out/$agent && chown user /out/$agent"
-  docker run --rm -v "$PWD/src":/src -v "$PWD/bin":/out ron-builder sh -c "$cmd"
-  strip --strip-all "bin/$agent.exe"
+  cd src
+  nim c -d:mingw -d:windows -d:amd64 -d:release --mm:orc --passL:"-static libsodium.a" --dynlibOverride:"sodium" "$agent.nim"
+  x86_64-w64-mingw32-strip --strip-all "$agent.exe"
+
   if [[ -n "$outdir" ]]; then
-    mv "bin/$agent.exe" "$outdir"
+    mv "$agent.exe" "$outdir"
+  else
+    mv "$agent.exe" ../bin
   fi
 fi
 

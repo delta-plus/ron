@@ -2,8 +2,39 @@
 
 host="$1"
 
+color() {
+  declare -A clrs
+  
+  clrs[r]='\033[31m'
+  clrs[y]='\033[33m'
+  clrs[b]='\033[34m'
+  clrs[p]='\033[35m'
+  
+  text=$(</dev/stdin)
+  clr="${clrs[$1]}"
+  nrm=$(tput sgr0)
+  
+  if [[ -n "$clr" ]]; then
+    echo -e "${clr}$text${nrm}"
+  else
+    echo "$text"
+  fi
+}
+
+bold() {
+  text=$(</dev/stdin)
+  bld=$(tput bold)
+  nrm=$(tput sgr0)
+  
+  echo "${bld}$text${nrm}"
+}
+
 install_packages() {
-  sudo apt-get install -y python3 openssl musl-tools docker
+  sudo apt-get install -y python3
+  sudo apt-get install -y openssl
+  sudo apt-get install -y musl-tools
+  sudo apt-get install -y docker
+  sudo apt-get install -y sd
 
   python3 -m venv venv
   source venv/bin/activate
@@ -11,26 +42,30 @@ install_packages() {
 }
 
 generate_certs() {
-  sed -i "s|HOST|$host|g" san.cnf
+  sd 'HOST' "$host" san.cnf
   openssl req -x509 -nodes -days 36500 -newkey rsa:4096 -keyout key.pem -out cert.pem -config san.cnf
 }
 
+fail=$(echo '[-]' | color r | bold)
+note=$(echo '[!]' | color y | bold)
+good=$(echo '[+]' | bold)
+
 if [[ -z "$host" ]]; then
-  echo 'Please specify a domain name or IP address to use with RON.'
-  exit
+  echo "$note Please specify a domain name or IP address to use with RON."
+  read -r -p '>> ' host || (echo "$fail Failed to get domain or IP. Exiting."; exit 1)
 fi
 
 cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" || exit
 
 echo 'Installing required packages...'
-install_packages 2>&1 | grep -q ''
+install_packages 2>/dev/null > /dev/null
 
-if ! (dpkg -s python3 && dpkg -s openssl && dpkg -s musl-tools); then
-  echo '[-] Package installation via apt failed. Exiting.'
+if ! (dpkg -s python3 2>/dev/null > /dev/null && dpkg -s openssl 2>/dev/null > /dev/null && dpkg -s musl-tools 2>/dev/null > /dev/null); then
+  echo "$fail Package installation via apt failed. Exiting."
   exit
 fi
 
-echo '[+] Done.'
+echo "$good Done."
 echo
 
 echo 'Generating TLS certificates...'
@@ -38,14 +73,30 @@ cd certs
 generate_certs 2>&1 | grep -q ''
 
 if ! [[ -f key.pem ]] && [[ -f cert.pem ]]; then
-  echo '[-] Certificate generation failed. Exiting.'
+  echo "$fail Certificate generation failed. Exiting."
   exit
 fi
 
-echo '[+] Done.'
+echo "$good Done."
 echo
 
-echo 'Building Docker image for agent compilation...'
+echo 'Installing tools for Linux agent compilation...'
 cd ../builder
-docker build --network=host -t ron-builder . 2>&1 > /dev/null
-echo '[+] Installation complete'
+mkdir bin
+link=$(curl -s https://nim-lang.org/install_unix.html | rg -o 'http[s]?://[^ '\''"]+' | sd '\.$' '' | sd '/$' '' | sort -u | rg 'nim-[0-9.]+.tar.xz$')
+curl -sL "$link" > nim.tar.xz
+docker build -t ron-builder -l error . 2>&1 > /dev/null || (echo "$fail Failed to build Docker container. Exiting."; exit 1)
+echo "$good Done."
+echo
+
+echo 'Installing tools for Windows agent compilation...'
+if [[ -z $(which nim) ]]; then
+  curl https://nim-lang.org/choosenim/init.sh -sSf > init.sh && chmod +x init.sh && ./init.sh -y 2>&1 > /dev/null || (echo "$fail Failed to install Nim on host. Exiting."; exit 1)
+  if [[ -f init.sh ]]; then
+    rm init.sh
+  fi
+fi
+nimble install -y chronos libsodium websock 2>&1 > /dev/null || (echo "$fail Failed to install Nim libraries on host. Exiting."; exit 1)
+cp libs/chronicles.nim ~/.nimble/pkgs2/chronicles-*/chronicles.nim # Patched chronicles.nim swap
+cd ..
+echo "$good Installation complete"
