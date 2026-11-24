@@ -12,7 +12,7 @@ A lightweight C2 framework written in Nim (agent) and Python (server).
 • Scrollable output (use pgup/pgdn!)  
 • Shell mode with per-agent memory of the current working directory. PowerShell by default on Windows.  
 • Asynchronous and multithreaded for responsive, full-duplex interaction. Feels good!  
-• Commands can be sent to multiple agents at once. Returned output is tagged with the ID of the agent it came from.  
+• Commands can be sent to multiple agents at once. Output is tagged with the relevant agent IDs.  
 • Static, stripped binaries for portability and minimal file size (~2 MB).  
 • Built-in file transfer.  
   
