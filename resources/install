@@ -30,12 +30,7 @@ bold() {
 }
 
 install_packages() {
-  sudo apt-get install -y python3
-  sudo apt-get install -y openssl
-  sudo apt-get install -y musl-tools
-  sudo apt-get install -y docker
-  sudo apt-get install -y sd
-
+  sudo apt-get install -y python3 openssl mingw-w64 docker sd ripgrep
   python3 -m venv venv
   source venv/bin/activate
   pip install -r requirements.txt
@@ -60,7 +55,7 @@ cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" || exit
 echo 'Installing required packages...'
 install_packages 2>/dev/null > /dev/null
 
-if ! (dpkg -s python3 2>/dev/null > /dev/null && dpkg -s openssl 2>/dev/null > /dev/null && dpkg -s musl-tools 2>/dev/null > /dev/null); then
+if ! (dpkg -s python3 2>/dev/null > /dev/null && dpkg -s openssl 2>/dev/null > /dev/null && dpkg -s mingw-w64 2>/dev/null > /dev/null && dpkg -s docker 2>/dev/null > /dev/null && dpkg -s sd 2>/dev/null > /dev/null && dpkg -s ripgrep 2>/dev/null > /dev/null); then
   echo "$fail Package installation via apt failed. Exiting."
   exit
 fi
