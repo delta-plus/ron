@@ -27,8 +27,8 @@ A lightweight C2 framework written in Nim (agent) and Python (server).
   
 <b>Usage:</b>  
 new [win|lin] [IP] (port) (ID) - Generate a new agent binary. Ports and IDs are random if unspecified.  
-download [remote file]         - Download file from target to host.
-upload [local file]            - Upload file from host to target.
+download [remote file]         - Download file from target to host.  
+upload [local file]            - Upload file from host to target.  
 use [agent ID]                 - Activate agent. This agent will now accept commands.  
 free [agent ID]                - Deactivate agent. The agent remains alive, but commands are not sent to it.  
 info                           - Return info about the target host.  
